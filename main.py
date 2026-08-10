@@ -49,7 +49,9 @@ def send_telegram(message):
         "text": message,
         "parse_mode": "HTML" 
     }
-    requests.post(url, json=payload)
+    res = requests.post(url, json=payload)
+    print(f"텔레그램 전송 상태: {res.status_code}") # 에러 확인용 출력
+    print(f"텔레그램 응답: {res.text}") # 에러 내용 상세 출력
 
 def main():
     # 3. Semantic Scholar API 사용
