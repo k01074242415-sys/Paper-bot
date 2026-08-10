@@ -36,7 +36,7 @@ def process_paper_korean(title, abstract):
 (여기에 광질, 양액 관리, EC 등 환경 제어 및 생리학적 기전 관점에서 분석한 핵심 결과를 한국어로 3줄 요약 작성)"""
     
     response = client.models.generate_content(
-        model='gemini-1.5-flash',
+        model='gemini-2.0-flash',
         contents=prompt
     )
     return response.text
