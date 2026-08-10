@@ -1,24 +1,42 @@
 import os
-import arxiv
 import requests
 from google import genai
+from datetime import datetime
 
-# 환경 변수에서 API 키 불러오기 (GitHub에 키를 숨기기 위해 사용)
+# 1. 환경 변수에서 API 키 불러오기
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 💡 대마(Cannabis, Hemp)의 원예, 생리, 유전, 환경제어 관련 검색어 설정
-SEARCH_QUERY = '(all:"cannabis" OR all:"hemp") AND (all:"horticulture" OR all:"physiology" OR all:"genetics" OR all:"environmental control" OR all:"cultivation")'
-MAX_PAPERS = 3 # 하루에 받을 논문 개수
+# 2. 대마 검색어 및 타겟 저널 리스트 설정
+SEARCH_QUERY = "cannabis OR hemp"
+TARGET_JOURNALS = [
+    "hortscience", 
+    "journal of the american society for horticultural science",
+    "scientia horticulturae", 
+    "frontiers in plant science", 
+    "plants", 
+    "industrial crops and products"
+]
+MAX_PAPERS = 3
 
-def summarize_paper(abstract):
-    """Gemini API를 사용해 논문 초록을 한국어로 요약합니다."""
+def process_paper_korean(title, abstract):
+    """Gemini API를 사용해 영어 제목을 한국어로 번역하고, 초록을 한국어로 요약합니다."""
     client = genai.Client(api_key=GEMINI_API_KEY)
-    prompt = f"다음 논문의 초록을 읽고, 핵심 기여도와 결과를 한국어로 3줄 요약해줘:\n\n{abstract}"
+    
+    # AI에게 제목 번역과 맞춤형 요약을 동시에 지시하는 양식
+    prompt = f"""다음 대마(Cannabis/Hemp) 논문의 영어 제목과 초록을 읽고, 아래 양식에 맞춰 한국어로 작성해줘.
+
+원문 제목: {title}
+원문 초록: {abstract}
+
+[출력 양식]
+📝 <b>한국어 제목:</b> (여기에 번역된 한국어 제목 작성)
+💡 <b>핵심 요약:</b>
+(여기에 광질, 양액 관리, EC 등 환경 제어 및 생리학적 기전 관점에서 분석한 핵심 결과를 한국어로 3줄 요약 작성)"""
     
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt
     )
     return response.text
@@ -29,34 +47,62 @@ def send_telegram(message):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "HTML" # 링크와 굵은 글씨 적용을 위해 HTML 모드 사용
+        "parse_mode": "HTML" 
     }
     requests.post(url, json=payload)
 
 def main():
-    # arXiv에서 최신 논문 검색
-    client = arxiv.Client()
-    search = arxiv.Search(
-        query=SEARCH_QUERY,
-        max_results=MAX_PAPERS,
-        sort_by=arxiv.SortCriterion.SubmittedDate # 최신순 정렬
-    )
+    # 3. Semantic Scholar API 사용
+    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    current_year = datetime.now().year
+    
+    params = {
+        "query": SEARCH_QUERY,
+        "fields": "title,url,abstract,venue",
+        "year": f"{current_year-1}-{current_year}",
+        "limit": 100 
+    }
+    
+    response = requests.get(url, params=params)
+    if response.status_code != 200:
+        send_telegram("❌ 논문 검색 시스템에 일시적인 오류가 발생했습니다.")
+        return
+        
+    papers = response.json().get("data", [])
+    
+    # 4. 타겟 저널 필터링
+    filtered_papers = []
+    for p in papers:
+        venue = str(p.get("venue", "")).lower()
+        abstract = p.get("abstract")
+        
+        if not venue or not abstract:
+            continue
+            
+        if any(target in venue for target in TARGET_JOURNALS):
+            filtered_papers.append(p)
+            
+        if len(filtered_papers) >= MAX_PAPERS:
+            break
 
-    # 텔레그램으로 보낼 첫 인사말
-    send_telegram("🔍 <b>오늘의 [대마/원예/환경제어] 관련 최신 논문입니다.</b>")
+    # 5. 텔레그램 메시지 전송
+    if not filtered_papers:
+        send_telegram("🔍 <b>오늘 지정하신 원예/식물학 저널에 새로 올라온 대마 관련 논문이 없습니다.</b>")
+        return
 
-    for result in client.results(search):
-        title = result.title
-        url = result.entry_id
-        abstract = result.summary
+    send_telegram("🔍 <b>오늘의 [타겟 저널] 대마 환경제어/생리 최신 논문입니다.</b>")
+
+    for p in filtered_papers:
+        title = p.get("title", "제목 없음")
+        paper_url = p.get("url", "")
+        venue_name = p.get("venue", "저널명 없음")
+        abstract = p.get("abstract", "")
         
-        # 요약 생성
-        summary = summarize_paper(abstract)
+        # 한국어 제목 번역 및 요약 텍스트 받아오기
+        korean_result = process_paper_korean(title, abstract)
         
-        # 메시지 조립
-        msg = f"📝 <b>{title}</b>\n🔗 <a href='{url}'>논문 링크</a>\n\n💡 <b>요약:</b>\n{summary}"
-        
-        # 텔레그램 전송
+        # 최종 메시지 조립
+        msg = f"🏫 <b>저널:</b> {venue_name}\n🔗 <a href='{paper_url}'>논문 원문 링크</a>\n\n{korean_result}"
         send_telegram(msg)
 
 if __name__ == "__main__":
