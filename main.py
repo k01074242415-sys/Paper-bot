@@ -1,5 +1,6 @@
 import os
 import requests
+import time  # 🌟 Gemini API 과부하 방지를 위한 시간 지연 모듈 추가
 from google import genai
 from datetime import datetime
 
@@ -169,6 +170,9 @@ def main():
         # 메시지 전송
         msg = f"📌 <b>[{priority_label}]</b>\n🏫 <b>저널:</b> {venue_name}\n🔗 <a href='{paper_url}'>논문 원문 링크</a>\n\n{korean_result}"
         send_telegram(msg)
+        
+        # 🌟 API 과부하 방지를 위해 다음 논문 요약 전 5초 대기
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
