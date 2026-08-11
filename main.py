@@ -24,7 +24,6 @@ def process_paper_korean(title, abstract):
     """Gemini API를 사용해 영어 제목을 한국어로 번역하고, 초록을 한국어로 요약합니다."""
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    # AI에게 제목 번역과 맞춤형 요약을 동시에 지시하는 양식
     prompt = f"""다음 대마(Cannabis/Hemp) 논문의 영어 제목과 초록을 읽고, 아래 양식에 맞춰 한국어로 작성해줘.
 
 원문 제목: {title}
@@ -49,48 +48,60 @@ def send_telegram(message):
         "text": message,
         "parse_mode": "HTML" 
     }
-    res = requests.post(url, json=payload)
-    print(f"텔레그램 전송 상태: {res.status_code}") # 에러 확인용 출력
-    print(f"텔레그램 응답: {res.text}") # 에러 내용 상세 출력
+    requests.post(url, json=payload)
+
+def reconstruct_abstract(inverted_index):
+    """OpenAlex의 특수한 초록 데이터(Inverted Index)를 일반 문장으로 복원합니다."""
+    if not inverted_index:
+        return ""
+    try:
+        max_idx = max([pos for positions in inverted_index.values() for pos in positions])
+        words = [""] * (max_idx + 1)
+        for word, positions in inverted_index.items():
+            for pos in positions:
+                words[pos] = word
+        return " ".join(words)
+    except Exception:
+        return ""
 
 def main():
-    # 3. Semantic Scholar API 사용
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    current_year = datetime.now().year
+    # 3. OpenAlex API 사용 (Semantic Scholar 429 차단 우회)
+    url = "https://api.openalex.org/works"
     
-    # 🌟 봇 차단을 막기 위해 일반 브라우저처럼 위장하는 헤더 추가
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
+    # mailto에 이메일을 넣으면 차단 없는 전용 서버(Polite Pool)를 배정받습니다.
     params = {
-        "query": SEARCH_QUERY,
-        "fields": "title,url,abstract,venue",
-        "year": f"{current_year-1}-{current_year}",
-        "limit": 100 
+        "search": SEARCH_QUERY,
+        "sort": "publication_date:desc", 
+        "mailto": "paperbot_bot@gmail.com", 
+        "per-page": 50
     }
     
-    # headers를 포함하여 요청 전송
-    response = requests.get(url, params=params, headers=headers)
+    response = requests.get(url, params=params)
     
     if response.status_code != 200:
-        # 🌟 에러 발생 시 정확한 에러 번호와 이유를 텔레그램으로 전송하도록 수정
-        error_msg = f"❌ 논문 검색 API 오류 발생\n- 상태 코드: {response.status_code}\n- 상세 이유: {response.text}"
-        send_telegram(error_msg)
+        send_telegram(f"❌ OpenAlex API 오류\n- 코드: {response.status_code}\n- 상세: {response.text}")
         return
         
-    papers = response.json().get("data", [])
+    papers = response.json().get("results", [])
     
     # 4. 타겟 저널 필터링
     filtered_papers = []
     for p in papers:
-        venue = str(p.get("venue", "")).lower()
-        abstract = p.get("abstract")
+        # 저널명 추출
+        primary_location = p.get("primary_location") or {}
+        source = primary_location.get("source") or {}
+        venue = (source.get("display_name") or "").lower()
+        
+        # 초록 복원
+        abstract_idx = p.get("abstract_inverted_index")
+        abstract = reconstruct_abstract(abstract_idx)
         
         if not venue or not abstract:
             continue
             
         if any(target in venue for target in TARGET_JOURNALS):
+            p['extracted_venue'] = venue
+            p['extracted_abstract'] = abstract
             filtered_papers.append(p)
             
         if len(filtered_papers) >= MAX_PAPERS:
@@ -98,21 +109,19 @@ def main():
 
     # 5. 텔레그램 메시지 전송
     if not filtered_papers:
-        send_telegram("🔍 <b>오늘 지정하신 원예/식물학 저널에 새로 올라온 대마 관련 논문이 없습니다.</b>")
+        send_telegram("🔍 <b>오늘 지정하신 저널에 새로 올라온 관련 논문이 없습니다.</b>")
         return
 
     send_telegram("🔍 <b>오늘의 [타겟 저널] 대마 환경제어/생리 최신 논문입니다.</b>")
 
     for p in filtered_papers:
         title = p.get("title", "제목 없음")
-        paper_url = p.get("url", "")
-        venue_name = p.get("venue", "저널명 없음")
-        abstract = p.get("abstract", "")
+        paper_url = p.get("doi", "") or p.get("id", "")
+        venue_name = p.get("extracted_venue", "저널명 없음").title()
+        abstract = p.get("extracted_abstract", "")
         
-        # 한국어 제목 번역 및 요약 텍스트 받아오기
         korean_result = process_paper_korean(title, abstract)
         
-        # 최종 메시지 조립
         msg = f"🏫 <b>저널:</b> {venue_name}\n🔗 <a href='{paper_url}'>논문 원문 링크</a>\n\n{korean_result}"
         send_telegram(msg)
 
