@@ -2,7 +2,7 @@ import os
 import requests
 import time
 from google import genai
-from google.genai import types  # 🌟 안전 필터 해제를 위해 추가
+from google.genai import types
 
 # 1. 환경 변수에서 API 키 불러오기
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -48,7 +48,6 @@ def process_paper_korean(title, abstract, priority):
             response = client.models.generate_content(
                 model='gemini-2.0-flash',
                 contents=prompt,
-                # 🌟 대마(마약류) 관련 키워드 검열을 무시하도록 안전 필터 강제 해제
                 config=types.GenerateContentConfig(
                     safety_settings=[
                         types.SafetySetting(
@@ -62,9 +61,8 @@ def process_paper_korean(title, abstract, priority):
         except Exception as e:
             last_error = str(e)
             print(f"⚠️ API 에러: {last_error} (재시도 {attempt+1}/3)")
-            time.sleep(10)
+            time.sleep(20) # 과부하 방지를 위해 대기 시간 20초로 증가
             
-    # 🌟 3번 모두 실패하면, 텔레그램으로 정확한 에러 원인을 보내도록 수정
     return f"💡 <b>요약 실패 (에러코드 확인용):</b> {last_error}"
 
 def send_telegram(message):
@@ -105,20 +103,29 @@ def fetch_openalex(query):
         return res.json().get("results", [])
     return []
 
-def is_blocked_publisher(venue, publisher):
-    """MDPI 및 Frontiers 관련 출판사와 저널을 필터링합니다."""
+def is_blocked_publisher(venue, publisher, doi):
+    """MDPI 및 Frontiers 관련 출판사와 저널을 확실하게 필터링합니다."""
     venue = venue.lower()
     publisher = publisher.lower()
+    doi = (doi or "").lower()
+    
+    # 확실한 차단법 1: DOI 번호표 확인 (10.3390=MDPI, 10.3389=Frontiers)
+    if "10.3390/" in doi or "10.3389/" in doi or "mdpi.com" in doi or "frontiersin.org" in doi:
+        return True
+        
+    # 확실한 차단법 2: 이름 확인
     if "mdpi" in publisher or "frontiers" in publisher or "frontiers" in venue or venue == "plants":
         return True
+        
     return False
 
 def main():
     collected_papers = []
     seen_ids = set() 
     
+    # 🌟 퀄리티 향상: 제목과 초록(title_and_abstract)에서만 키워드를 찾도록 쿼리 수정
     # --- [1순위] Q1 저널 내 대마 논문 ---
-    query_1 = '"cannabis" OR "hemp"'
+    query_1 = 'title_and_abstract:("cannabis" OR "hemp")'
     papers_1 = fetch_openalex(query_1)
     
     for p in papers_1:
@@ -129,21 +136,24 @@ def main():
         venue = (source.get("display_name") or "").lower()
         publisher = (source.get("host_organization_name") or "").lower()
         abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
+        doi = p.get("doi", "")
         paper_id = p.get("id")
         
         if venue and abstract and paper_id not in seen_ids:
-            if is_blocked_publisher(venue, publisher): continue
+            if is_blocked_publisher(venue, publisher, doi): continue
             
             if any(target in venue for target in Q1_JOURNALS):
                 p['priority_label'] = "1순위: Q1 저널 대마 논문"
                 p['priority_code'] = 1
                 p['venue'] = venue
                 p['abstract'] = abstract
+                p['doi'] = doi
                 collected_papers.append(p)
                 seen_ids.add(paper_id)
 
+    # 🌟 퀄리티 향상: 제목과 초록(title_and_abstract)에서만 키워드를 찾도록 쿼리 수정
     # --- 수직농장, 환경제어, 스트레스 처리 등 포괄적 쿼리 세팅 ---
-    query_2_3 = '("vertical farming" OR "controlled environment" OR "osmotic stress" OR "electrical conductivity" OR "adventitious rooting" OR "glucosinolate" OR "proline" OR "GS-GOGAT")'
+    query_2_3 = 'title_and_abstract:("vertical farming" OR "controlled environment" OR "osmotic stress" OR "electrical conductivity" OR "adventitious rooting" OR "glucosinolate" OR "proline" OR "GS-GOGAT")'
     
     # --- [2순위] Q1 저널 내 수직농장/스트레스/환경제어 논문 ---
     if len(collected_papers) < MAX_PAPERS:
@@ -157,16 +167,18 @@ def main():
             venue = (source.get("display_name") or "").lower()
             publisher = (source.get("host_organization_name") or "").lower()
             abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
+            doi = p.get("doi", "")
             paper_id = p.get("id")
             
             if venue and abstract and paper_id not in seen_ids:
-                if is_blocked_publisher(venue, publisher): continue
+                if is_blocked_publisher(venue, publisher, doi): continue
                 
                 if any(target in venue for target in Q1_JOURNALS):
                     p['priority_label'] = "2순위: Q1 저널 수직농장/스트레스 논문"
                     p['priority_code'] = 2
                     p['venue'] = venue
                     p['abstract'] = abstract
+                    p['doi'] = doi
                     collected_papers.append(p)
                     seen_ids.add(paper_id)
 
@@ -182,16 +194,19 @@ def main():
             venue = (source.get("display_name") or "").lower()
             publisher = (source.get("host_organization_name") or "").lower()
             abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
+            doi = p.get("doi", "")
             paper_id = p.get("id")
             
             if venue and abstract and paper_id not in seen_ids:
-                if is_blocked_publisher(venue, publisher): continue
+                if is_blocked_publisher(venue, publisher, doi): continue
                 
+                # Q1 저널 리스트에 없는 논문들만 수집
                 if not any(target in venue for target in Q1_JOURNALS):
                     p['priority_label'] = "3순위: 기타 저널 수직농장/스트레스 논문"
                     p['priority_code'] = 3
                     p['venue'] = venue
                     p['abstract'] = abstract
+                    p['doi'] = doi
                     collected_papers.append(p)
                     seen_ids.add(paper_id)
 
@@ -208,14 +223,14 @@ def main():
         venue_name = p.get("venue", "저널명 없음").title()
         priority_label = p.get("priority_label")
         
-        # 한국어 요약 생성
+        # 한국어 요약 생성 (1줄 요약)
         korean_result = process_paper_korean(title, p['abstract'], p['priority_code'])
         
         # 메시지 전송
         msg = f"📌 <b>[{priority_label}]</b>\n🏫 <b>저널:</b> {venue_name}\n🔗 <a href='{paper_url}'>논문 원문 링크</a>\n\n{korean_result}"
         send_telegram(msg)
         
-        time.sleep(10) 
+        time.sleep(15) 
 
 if __name__ == "__main__":
     main()
