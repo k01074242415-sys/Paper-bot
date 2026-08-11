@@ -1,6 +1,6 @@
 import os
 import requests
-import time  # 🌟 Gemini API 과부하 방지를 위한 시간 지연 모듈 추가
+import time
 from google import genai
 from datetime import datetime
 
@@ -21,7 +21,7 @@ TARGET_JOURNALS = [
 MAX_PAPERS = 3
 
 def process_paper_korean(title, abstract, priority):
-    """Gemini API를 사용해 영어 제목을 번역하고, 우선순위에 맞게 요약합니다."""
+    """Gemini API를 사용해 영어 제목을 번역하고 요약합니다. (에러 방지 안전장치 추가)"""
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     if priority in [1, 3]:
@@ -39,11 +39,20 @@ def process_paper_korean(title, abstract, priority):
 💡 <b>핵심 요약:</b>
 (여기에 광질, 양액 관리, 전기전도도(EC), 삼투 스트레스, 이차대사산물(글루코시놀레이트 등) 및 식물 생리학적 기전 관점에서 분석한 핵심 결과를 한국어로 3줄 요약 작성)"""
     
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=prompt
-    )
-    return response.text
+    # 🌟 안전장치: 에러가 나면 최대 3번까지 30초씩 쉬면서 재시도합니다.
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            print(f"⚠️ Gemini API 과부하 발생. 30초 대기 후 재시도합니다... ({attempt+1}/3)")
+            time.sleep(30)
+            
+    # 3번 다 실패해도 프로그램이 꺼지지 않고 원문 링크라도 보내주도록 처리
+    return "❌ AI 요약 서버 지연으로 요약을 생성하지 못했습니다. 위 원문 링크를 통해 확인해 주세요."
 
 def send_telegram(message):
     """텔레그램 봇으로 메시지를 전송합니다."""
@@ -85,7 +94,7 @@ def fetch_openalex(query):
 
 def main():
     collected_papers = []
-    seen_ids = set() # 중복 방지용
+    seen_ids = set() 
     
     # --- [1순위] 타겟 저널 내 대마 논문 ---
     query_1 = '"cannabis" OR "hemp"'
@@ -93,7 +102,6 @@ def main():
     
     for p in papers_1:
         if len(collected_papers) >= MAX_PAPERS: break
-        
         venue = (p.get("primary_location", {}).get("source", {}) or {}).get("display_name", "").lower()
         abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
         paper_id = p.get("id")
@@ -109,13 +117,11 @@ def main():
 
     # --- [2순위] 타겟 저널 내 환경 제어 또는 식물 생리 논문 ---
     if len(collected_papers) < MAX_PAPERS:
-        # 환경 제어 및 식물 생리 관련 폭넓은 키워드 적용
         query_2 = '"environmental control" OR "electrical conductivity" OR "nutrient solution" OR "osmotic stress" OR "plant physiology" OR "GS-GOGAT" OR "glucosinolate" OR "proline"'
         papers_2 = fetch_openalex(query_2)
         
         for p in papers_2:
             if len(collected_papers) >= MAX_PAPERS: break
-            
             venue = (p.get("primary_location", {}).get("source", {}) or {}).get("display_name", "").lower()
             abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
             paper_id = p.get("id")
@@ -136,13 +142,11 @@ def main():
         
         for p in papers_3:
             if len(collected_papers) >= MAX_PAPERS: break
-            
             venue = (p.get("primary_location", {}).get("source", {}) or {}).get("display_name", "").lower()
             abstract = reconstruct_abstract(p.get("abstract_inverted_index"))
             paper_id = p.get("id")
             
             if venue and abstract and paper_id not in seen_ids:
-                # 3순위는 지정 저널이 '아닌' 곳에서 가져옴
                 if not any(target in venue for target in TARGET_JOURNALS):
                     p['priority_label'] = "3순위: 외부 저널 대마/원예 논문"
                     p['priority_code'] = 3
@@ -164,15 +168,15 @@ def main():
         venue_name = p.get("venue", "저널명 없음").title()
         priority_label = p.get("priority_label")
         
-        # 한국어 요약 생성
+        # 한국어 요약 생성 (안전장치가 작동함)
         korean_result = process_paper_korean(title, p['abstract'], p['priority_code'])
         
         # 메시지 전송
         msg = f"📌 <b>[{priority_label}]</b>\n🏫 <b>저널:</b> {venue_name}\n🔗 <a href='{paper_url}'>논문 원문 링크</a>\n\n{korean_result}"
         send_telegram(msg)
         
-        # 🌟 API 과부하 방지를 위해 다음 논문 요약 전 5초 대기
-        time.sleep(5)
+        # 기본적으로 논문 1개 요약 후 15초를 쉬어줍니다. (안정성 강화)
+        time.sleep(15) 
 
 if __name__ == "__main__":
     main()
