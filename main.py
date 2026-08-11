@@ -58,6 +58,11 @@ def main():
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     current_year = datetime.now().year
     
+    # 🌟 봇 차단을 막기 위해 일반 브라우저처럼 위장하는 헤더 추가
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
     params = {
         "query": SEARCH_QUERY,
         "fields": "title,url,abstract,venue",
@@ -65,9 +70,13 @@ def main():
         "limit": 100 
     }
     
-    response = requests.get(url, params=params)
+    # headers를 포함하여 요청 전송
+    response = requests.get(url, params=params, headers=headers)
+    
     if response.status_code != 200:
-        send_telegram("❌ 논문 검색 시스템에 일시적인 오류가 발생했습니다.")
+        # 🌟 에러 발생 시 정확한 에러 번호와 이유를 텔레그램으로 전송하도록 수정
+        error_msg = f"❌ 논문 검색 API 오류 발생\n- 상태 코드: {response.status_code}\n- 상세 이유: {response.text}"
+        send_telegram(error_msg)
         return
         
     papers = response.json().get("data", [])
